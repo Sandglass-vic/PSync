@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Scheme LastUpgradeVersion="1600" version="1.7">
+   <BuildAction parallelizeBuildables="YES" buildImplicitDependencies="YES">
+      <BuildActionEntries>
+         <BuildActionEntry buildForTesting="YES" buildForRunning="YES" buildForProfiling="YES" buildForArchiving="YES" buildForAnalyzing="YES">
+            <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="E0425C75C04B4028A2AE50BF" BlueprintName="PSync" ReferencedContainer="container:PSync.xcodeproj"/>
+         </BuildActionEntry>
+      </BuildActionEntries>
+   </BuildAction>
+   <TestAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.DebuggerFoundation.Launcher.LLDB" shouldUseLaunchSchemeArgsEnv="YES">
+      <Testables>
+         <TestableReference skipped="NO">
+            <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="E5EB795D6F9C427DB02BEE0C" BlueprintName="PSyncTests" ReferencedContainer="container:PSync.xcodeproj"/>
+         </TestableReference>
+      </Testables>
+   </TestAction>
+   <LaunchAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.DebuggerFoundation.Launcher.LLDB" launchStyle="0" useCustomWorkingDirectory="NO" ignoresPersistentStateOnLaunch="NO" debugDocumentVersioning="YES" debugServiceExtension="internal" allowLocationSimulation="YES">
+      <BuildableProductRunnable runnableDebuggingMode="0">
+         <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="E0425C75C04B4028A2AE50BF" BlueprintName="PSync" ReferencedContainer="container:PSync.xcodeproj"/>
+      </BuildableProductRunnable>
+   </LaunchAction>
+</Scheme>
