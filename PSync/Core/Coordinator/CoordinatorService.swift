@@ -44,11 +44,9 @@ final class CoordinatorService: @unchecked Sendable {
         lock.unlock()
     }
 
-    func allConfirmed() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
+    func allConfirmed(members: [SharingMember]) -> Bool {
         guard !members.isEmpty else { return false }
-        return members.allSatisfy { memberConfirmations[$0.deviceId] == true }
+        return members.allSatisfy(\.confirmed)
     }
 
     func resetConfirmations() {

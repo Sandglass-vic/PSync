@@ -35,7 +35,7 @@ final class TransferGraph: @unchecked Sendable {
         defer { lock.unlock() }
 
         return tasks.values.filter { task in
-            guard task.state == .pending || task.state == .scheduled else { return false }
+            guard task.state == .pending || task.state == .scheduled || task.state == .rescheduled else { return false }
             guard dependenciesMet(task) else { return false }
 
             switch role {
@@ -124,10 +124,14 @@ final class TransferScheduler: @unchecked Sendable {
 
         graph.reset()
         var allTasks: [TransferTask] = []
+        var scheduledKeys: Set<String> = []
 
         for memberId in members {
             let (required, _) = registry.computeDiff(for: memberId)
             for contentHash in required {
+                let key = "\(memberId):\(contentHash)"
+                guard !scheduledKeys.contains(key) else { continue }
+
                 let sources = registry.availableSources(for: contentHash)
                     .filter { $0 != memberId }
 
@@ -151,6 +155,7 @@ final class TransferScheduler: @unchecked Sendable {
 
                 if (try? graph.addTask(task)) != nil {
                     allTasks.append(task)
+                    scheduledKeys.insert(key)
                 }
             }
         }
@@ -159,6 +164,22 @@ final class TransferScheduler: @unchecked Sendable {
         addRelayTasks(members: members, existingTasks: &allTasks)
 
         return allTasks
+    }
+
+    /// 非协调者收到广播计划后，写入本地调度图，否则 nextTasks 永远为空
+    func loadPlan(_ tasks: [TransferTask]) {
+        lock.lock()
+        defer { lock.unlock() }
+        graph.reset()
+        for task in tasks {
+            try? graph.addTask(task)
+        }
+    }
+
+    func adoptTask(_ task: TransferTask) {
+        lock.lock()
+        defer { lock.unlock() }
+        try? graph.addTask(task)
     }
 
     func rescheduleFailedTask(_ task: TransferTask, members: [String]) -> TransferTask? {
@@ -189,6 +210,10 @@ final class TransferScheduler: @unchecked Sendable {
     func nextTasks(for deviceId: String, role: TransferGraph.TaskRole, limit: Int) -> [TransferTask] {
         let ready = graph.readyTasks(for: deviceId, role: role)
         return Array(ready.prefix(limit))
+    }
+
+    func updateTaskState(_ transferId: String, state: TransferState) {
+        graph.updateState(transferId, state: state)
     }
 
     func markCompleted(_ transferId: String, contentHash: String, deviceId: String) {
@@ -231,6 +256,12 @@ final class TransferScheduler: @unchecked Sendable {
         for memberId in members {
             let (required, _) = registry.computeDiff(for: memberId)
             for contentHash in required {
+                if existingTasks.contains(where: {
+                    $0.destinationDeviceId == memberId && $0.contentHash == contentHash
+                }) {
+                    continue
+                }
+
                 let directSources = registry.availableSources(for: contentHash)
                 let relayCandidates = members.filter { candidate in
                     candidate != memberId &&

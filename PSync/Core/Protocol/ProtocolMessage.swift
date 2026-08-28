@@ -50,6 +50,7 @@ struct DiscoveryAdvertisementPayload: Codable, Sendable, Equatable {
     let avatarId: Int
     let sessionId: String
     let joinCode: String
+    let networkEndpoint: String
     let capabilities: [String]
     let controlPort: UInt16
 
@@ -60,6 +61,7 @@ struct DiscoveryAdvertisementPayload: Codable, Sendable, Equatable {
         case avatarId = "avatar_id"
         case sessionId = "session_id"
         case joinCode
+        case networkEndpoint = "network_endpoint"
         case capabilities
         case controlPort = "control_port"
     }
@@ -74,6 +76,7 @@ struct DeviceInfoPayload: Codable, Sendable, Equatable {
     let networkEndpoint: String
     let capabilities: [String]
     let controlPort: UInt16
+    let transferPort: UInt16
 
     enum CodingKeys: String, CodingKey {
         case deviceId = "device_id"
@@ -84,11 +87,22 @@ struct DeviceInfoPayload: Codable, Sendable, Equatable {
         case networkEndpoint = "network_endpoint"
         case capabilities
         case controlPort = "control_port"
+        case transferPort = "transfer_port"
     }
 }
 
 struct JoinRequestPayload: Codable, Sendable {
     let device: DeviceInfoPayload
+}
+
+struct JoinLeavePayload: Codable, Sendable {
+    let deviceId: String
+    let reason: String?
+
+    enum CodingKeys: String, CodingKey {
+        case deviceId = "device_id"
+        case reason
+    }
 }
 
 struct JoinAcceptPayload: Codable, Sendable {
@@ -111,8 +125,10 @@ struct MemberPayload: Codable, Sendable, Equatable, Identifiable {
     let avatarId: Int
     let networkEndpoint: String
     let controlPort: UInt16
+    let transferPort: UInt16
     let isCoordinator: Bool
     let confirmed: Bool
+    let joinedAt: TimeInterval
 
     var id: String { deviceId }
 
@@ -122,8 +138,45 @@ struct MemberPayload: Codable, Sendable, Equatable, Identifiable {
         case avatarId = "avatar_id"
         case networkEndpoint = "network_endpoint"
         case controlPort = "control_port"
+        case transferPort = "transfer_port"
         case isCoordinator = "is_coordinator"
         case confirmed
+        case joinedAt = "joined_at"
+    }
+
+    init(
+        deviceId: String,
+        userName: String,
+        avatarId: Int,
+        networkEndpoint: String,
+        controlPort: UInt16,
+        transferPort: UInt16 = 0,
+        isCoordinator: Bool,
+        confirmed: Bool,
+        joinedAt: TimeInterval
+    ) {
+        self.deviceId = deviceId
+        self.userName = userName
+        self.avatarId = avatarId
+        self.networkEndpoint = networkEndpoint
+        self.controlPort = controlPort
+        self.transferPort = transferPort
+        self.isCoordinator = isCoordinator
+        self.confirmed = confirmed
+        self.joinedAt = joinedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        deviceId = try container.decode(String.self, forKey: .deviceId)
+        userName = try container.decode(String.self, forKey: .userName)
+        avatarId = try container.decode(Int.self, forKey: .avatarId)
+        networkEndpoint = try container.decode(String.self, forKey: .networkEndpoint)
+        controlPort = try container.decode(UInt16.self, forKey: .controlPort)
+        transferPort = try container.decodeIfPresent(UInt16.self, forKey: .transferPort) ?? 0
+        isCoordinator = try container.decode(Bool.self, forKey: .isCoordinator)
+        confirmed = try container.decode(Bool.self, forKey: .confirmed)
+        joinedAt = try container.decodeIfPresent(TimeInterval.self, forKey: .joinedAt) ?? 0
     }
 }
 
@@ -135,6 +188,14 @@ struct MembershipUpdatePayload: Codable, Sendable {
         case members
         case securityCode = "security_code"
     }
+}
+
+struct SessionPhasePayload: Codable, Sendable {
+    let phase: String
+}
+
+struct SessionCompletePayload: Codable, Sendable {
+    let deviceId: String
 }
 
 struct SecurityCodePayload: Codable, Sendable {
@@ -162,6 +223,7 @@ struct PhotoMetadataPayload: Codable, Sendable, Equatable {
     let height: Int
     let format: String
     let ownerDeviceId: String
+    let isLivePhoto: Bool
 
     enum CodingKeys: String, CodingKey {
         case photoId = "photo_id"
@@ -172,6 +234,42 @@ struct PhotoMetadataPayload: Codable, Sendable, Equatable {
         case height
         case format
         case ownerDeviceId = "owner_device_id"
+        case isLivePhoto = "is_live_photo"
+    }
+
+    init(
+        photoId: String,
+        contentHash: String,
+        fileHash: String,
+        size: Int64,
+        width: Int,
+        height: Int,
+        format: String,
+        ownerDeviceId: String,
+        isLivePhoto: Bool = false
+    ) {
+        self.photoId = photoId
+        self.contentHash = contentHash
+        self.fileHash = fileHash
+        self.size = size
+        self.width = width
+        self.height = height
+        self.format = format
+        self.ownerDeviceId = ownerDeviceId
+        self.isLivePhoto = isLivePhoto
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        photoId = try container.decode(String.self, forKey: .photoId)
+        contentHash = try container.decode(String.self, forKey: .contentHash)
+        fileHash = try container.decode(String.self, forKey: .fileHash)
+        size = try container.decode(Int64.self, forKey: .size)
+        width = try container.decode(Int.self, forKey: .width)
+        height = try container.decode(Int.self, forKey: .height)
+        format = try container.decode(String.self, forKey: .format)
+        ownerDeviceId = try container.decode(String.self, forKey: .ownerDeviceId)
+        isLivePhoto = try container.decodeIfPresent(Bool.self, forKey: .isLivePhoto) ?? false
     }
 }
 
@@ -322,5 +420,88 @@ enum ProtocolCodec {
             envelopes.append(envelope)
         }
         return envelopes
+    }
+}
+
+/// 数据面帧：`transferId|contentHash|totalSize|pairedVideoSize|stillName|videoName\n` + 字节
+enum PhotoTransferFrame {
+    struct Header: Equatable, Sendable {
+        let transferId: String
+        let contentHash: String
+        let totalSize: Int64
+        let pairedVideoSize: Int64
+        let stillFilename: String?
+        let pairedVideoFilename: String?
+    }
+
+    static func encode(
+        transferId: String,
+        contentHash: String,
+        stillData: Data,
+        pairedVideoData: Data = Data(),
+        stillFilename: String? = nil,
+        pairedVideoFilename: String? = nil
+    ) -> Data {
+        var body = stillData
+        body.append(pairedVideoData)
+        let stillName = encodeField(stillFilename ?? "")
+        let videoName = encodeField(pairedVideoFilename ?? "")
+        var payload = Data(
+            "\(transferId)|\(contentHash)|\(body.count)|\(pairedVideoData.count)|\(stillName)|\(videoName)\n".utf8
+        )
+        payload.append(body)
+        return payload
+    }
+
+    static func encode(transferId: String, contentHash: String, body: Data) -> Data {
+        encode(transferId: transferId, contentHash: contentHash, stillData: body)
+    }
+
+    static func parse(_ buffer: Data) -> (header: Header, body: Data)? {
+        guard let newlineIndex = buffer.firstIndex(of: 0x0A) else { return nil }
+        let headerData = buffer[..<newlineIndex]
+        guard let header = String(data: headerData, encoding: .utf8) else { return nil }
+        let parts = header.split(separator: "|", omittingEmptySubsequences: false)
+        guard parts.count >= 3, let totalSize = Int64(parts[2]) else { return nil }
+        let pairedVideoSize: Int64
+        if parts.count >= 4, let parsedVideoSize = Int64(parts[3]) {
+            pairedVideoSize = parsedVideoSize
+        } else {
+            pairedVideoSize = 0
+        }
+        let stillFilename = parts.count >= 5 ? decodeField(String(parts[4])) : nil
+        let pairedVideoFilename = parts.count >= 6 ? decodeField(String(parts[5])) : nil
+        return (
+            Header(
+                transferId: String(parts[0]),
+                contentHash: String(parts[1]),
+                totalSize: totalSize,
+                pairedVideoSize: pairedVideoSize,
+                stillFilename: stillFilename,
+                pairedVideoFilename: pairedVideoFilename
+            ),
+            Data(buffer[(newlineIndex + 1)...])
+        )
+    }
+
+    static func splitPayload(_ body: Data, header: Header) -> (still: Data, pairedVideo: Data?) {
+        let videoSize = Int(header.pairedVideoSize)
+        guard videoSize > 0, body.count >= videoSize else {
+            return (body, nil)
+        }
+        let stillCount = body.count - videoSize
+        return (
+            Data(body.prefix(stillCount)),
+            Data(body.suffix(videoSize))
+        )
+    }
+
+    private static func encodeField(_ value: String) -> String {
+        value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? value
+    }
+
+    private static func decodeField(_ value: String) -> String? {
+        guard !value.isEmpty else { return nil }
+        return value.removingPercentEncoding ?? value
     }
 }

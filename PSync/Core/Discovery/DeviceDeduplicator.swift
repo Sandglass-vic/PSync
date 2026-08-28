@@ -46,9 +46,15 @@ enum JoinCodeGenerator {
 }
 
 enum SecurityCodeGenerator {
-    static func generate(memberDeviceIds: [String], sessionId: String) -> String {
+    /// 群组安全码由 session、成员列表、以及最新成员加入时间共同决定
+    static func generate(
+        memberDeviceIds: [String],
+        sessionId: String,
+        latestMemberJoinedAt: TimeInterval
+    ) -> String {
         let sorted = memberDeviceIds.sorted().joined(separator: ":")
-        let input = "\(sessionId):\(sorted)"
+        let joinedAtMillis = Int64((latestMemberJoinedAt * 1000).rounded())
+        let input = "\(sessionId):\(sorted):\(joinedAtMillis)"
         let hash = input.utf8.reduce(into: UInt64(0)) { acc, byte in
             acc = acc &* 31 &+ UInt64(byte)
         }

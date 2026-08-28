@@ -2,51 +2,63 @@ import SwiftUI
 
 struct SharingView: View {
     @ObservedObject var session: SessionManager
-    @Environment(\.dismiss) private var dismiss
+
+    private var shouldShowTransferProgress: Bool {
+        switch session.sessionState.phase {
+        case .syncingMetadata, .transferring, .awaitingGroupSync, .completed:
+            return true
+        default:
+            return false
+        }
+    }
 
     var body: some View {
         VStack(spacing: 20) {
             phaseIndicator
 
             if let joinCode = session.sessionState.joinCode {
-                VStack(spacing: 4) {
-                    Text("加入码")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text(joinCode)
-                        .font(.system(size: 36, weight: .bold, design: .monospaced))
-                        .tracking(8)
-                }
-                .padding()
-                .background(Color.blue.opacity(0.08))
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+                SessionCodeBanner(title: "加入码", code: joinCode, tracking: 8)
             }
 
-            if let securityCode = session.sessionState.securityCode {
-                VStack(spacing: 4) {
-                    Text("群组安全码")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text(securityCode)
-                        .font(.title2.bold().monospaced())
-                }
+            if let securityCode = session.sessionState.securityCode,
+               session.sessionState.members.count > 1 {
+                SessionCodeBanner(title: "群组安全码", code: securityCode, tracking: 6)
             }
 
             membersSection
-
-            if session.sessionState.phase == .transferring {
-                transferProgress
-            }
 
             Spacer()
 
             actionButtons
         }
         .padding()
-        .navigationTitle("面对面共享")
+        .navigationTitle("PSync面对面共享")
         .navigationBarTitleDisplayMode(.inline)
-        .navigationDestination(isPresented: $session.showResults) {
-            ResultsView(session: session)
+        .navigationBarBackButtonHidden(true)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    session.cancelSharing()
+                    // 由 HomeView 监听 isSharing/phase 收起，避免只退到安全码页
+                } label: {
+                    Image(systemName: "chevron.backward")
+                }
+                .accessibilityLabel("返回主页")
+            }
+        }
+        .navigationDestination(isPresented: Binding(
+            get: { shouldShowTransferProgress },
+            set: { _ in }
+        )) {
+            TransferProgressView(session: session)
+        }
+        .onDisappear {
+            if session.isSharing,
+               session.sessionState.phase != .completed,
+               session.sessionState.phase != .awaitingGroupSync,
+               !shouldShowTransferProgress {
+                session.cancelSharing()
+            }
         }
     }
 
@@ -63,7 +75,7 @@ struct SharingView: View {
 
     private var isLoading: Bool {
         switch session.sessionState.phase {
-        case .discovering, .syncingMetadata, .transferring:
+        case .discovering, .syncingMetadata:
             return true
         default:
             return false
@@ -77,73 +89,74 @@ struct SharingView: View {
         case .waitingConfirmation: return "等待所有成员确认"
         case .syncingMetadata: return "同步照片信息..."
         case .transferring: return "传输中..."
+        case .awaitingGroupSync: return "等待全员同步..."
         case .completed: return "共享完成"
         case .failed(let msg): return "失败: \(msg)"
         }
     }
 
     private var membersSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("共享成员 (\(session.sessionState.members.count))")
-                .font(.headline)
-
-            if session.sessionState.members.isEmpty {
-                Text("正在搜索附近设备...")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding()
-            } else {
-                ForEach(session.sessionState.members) { member in
-                    MemberRow(member: member)
+        Group {
+            if !session.sessionState.members.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 28) {
+                        ForEach(session.sessionState.members) { member in
+                            MemberAvatarTile(member: member)
+                        }
+                    }
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 8)
                 }
             }
         }
+        .frame(minHeight: 96)
+        .animation(nil, value: session.sessionState.members.map { "\($0.deviceId):\($0.confirmed)" })
     }
 
-    private var transferProgress: some View {
-        VStack(spacing: 8) {
-            ProgressView(value: progressValue)
-            HStack {
-                Text("我应收到：\(session.sessionState.photosToReceive) 张")
-                Spacer()
-                Text("已收到：\(session.sessionState.photosReceived) 张")
-            }
-            .font(.subheadline)
-        }
-        .padding()
-        .background(Color.gray.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-    }
-
-    private var progressValue: Double {
-        guard session.sessionState.photosToReceive > 0 else { return 0 }
-        return Double(session.sessionState.photosReceived) / Double(session.sessionState.photosToReceive)
+    private var localConfirmed: Bool {
+        session.sessionState.members.first { $0.deviceId == session.identity.deviceId }?.confirmed == true
     }
 
     @ViewBuilder
     private var actionButtons: some View {
-        if session.sessionState.phase == .waitingConfirmation {
+        switch session.sessionState.phase {
+        case .waitingConfirmation where !localConfirmed:
             Button {
                 session.confirmSharing()
             } label: {
-                Text("确认共享")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(Color.green)
-                    .foregroundStyle(.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                PSyncPrimaryButtonLabel(title: "确认共享")
             }
+            .buttonStyle(.plain)
+        case .waitingConfirmation, .syncingMetadata:
+            Button {
+                session.unconfirmSharing()
+            } label: {
+                PSyncPrimaryButtonLabel(title: "取消共享")
+            }
+            .buttonStyle(.plain)
+        default:
+            EmptyView()
         }
+    }
+}
 
-        Button(role: .destructive) {
-            session.cancelSharing()
-            dismiss()
-        } label: {
-            Text("取消共享")
-                .frame(maxWidth: .infinity)
-                .padding()
+private struct SessionCodeBanner: View {
+    let title: String
+    let code: String
+    let tracking: CGFloat
+
+    var body: some View {
+        VStack(spacing: 4) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(code)
+                .font(.system(size: 36, weight: .bold, design: .monospaced))
+                .tracking(tracking)
         }
+        .padding()
+        .frame(maxWidth: .infinity)
+        .background(Color.blue.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 }

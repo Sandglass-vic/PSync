@@ -5,7 +5,10 @@ enum ProtocolConstants {
     static let maxMembers = 8
     static let joinCodeLength = 4
 
-    // Discovery
+    // Bonjour + BLE discovery (iOS, AirDrop-like)
+    static let bonjourServiceType = "_psync._tcp"
+
+    // Legacy UDP discovery (unused on iOS)
     static let discoveryPort: UInt16 = 9876
     static let discoveryBroadcastInterval: TimeInterval = 0.5
     static let discoveryTimeout: TimeInterval = 3.0
@@ -17,7 +20,7 @@ enum ProtocolConstants {
 
     // Transfer
     static let defaultChunkSize = 256 * 1024
-    static let maxUploadConnections = 3
+    static let maxUploadConnections = 1
     static let maxDownloadConnections = 3
     static let controlMessageTimeout: TimeInterval = 10.0
     static let transferMessageTimeout: TimeInterval = 30.0
@@ -39,6 +42,7 @@ enum MessageType: String, Codable, CaseIterable {
     case joinAccept = "join_accept"
     case joinLeave = "join_leave"
     case membershipUpdate = "membership_update"
+    case sessionPhase = "session_phase"
 
     // Security
     case securityCode = "security_code"

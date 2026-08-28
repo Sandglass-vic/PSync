@@ -40,13 +40,11 @@ final class GlobalPhotoRegistry: @unchecked Sendable {
         var owned: [String] = []
         var required: [String] = []
 
-        for (hash, var entry) in entries {
+        for (hash, entry) in entries {
             if entry.owners.contains(deviceId) {
                 owned.append(hash)
             } else {
                 required.append(hash)
-                entry.requiredBy.insert(deviceId)
-                entries[hash] = entry
             }
         }
 
@@ -63,6 +61,17 @@ final class GlobalPhotoRegistry: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return Array(entries.values)
+    }
+
+    /// 真机调试：contentHash → 拥有者列表
+    func debugOwnerMap() -> [String: [String]] {
+        lock.lock()
+        defer { lock.unlock() }
+        var map: [String: [String]] = [:]
+        for (hash, entry) in entries {
+            map[hash] = entry.owners.sorted()
+        }
+        return map
     }
 
     func markCompleted(contentHash: String, for deviceId: String) {

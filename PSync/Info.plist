@@ -22,14 +22,22 @@
 	<string>1</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>PSync 需要通过蓝牙发现附近的设备，以便快速开始面对面照片共享。</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>PSync 需要访问本地网络以发现附近设备并传输照片。</string>
 	<key>NSBonjourServices</key>
 	<array>
-		<string>_psync._udp</string>
+		<string>_psync._tcp</string>
 	</array>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>PSync 需要访问您的照片库以选择要共享的照片。</string>
+	<string>PSync 需要访问您的照片库以选择要共享的照片，并将收到的照片保存到相册。</string>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>photos</string>
+		<string>photos-navigation</string>
+		<string>photos-redirect</string>
+	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

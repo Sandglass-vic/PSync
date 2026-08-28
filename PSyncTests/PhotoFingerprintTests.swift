@@ -2,30 +2,23 @@ import XCTest
 @testable import PSync
 
 final class PhotoFingerprintTests: XCTestCase {
-    func testSameImageProducesSameContentHash() throws {
+    func testSameBytesProduceSameContentHash() throws {
         let size = CGSize(width: 100, height: 100)
         UIGraphicsBeginImageContext(size)
         UIColor.red.setFill()
         UIRectFill(CGRect(origin: .zero, size: size))
-        let image1 = UIGraphicsGetImageFromCurrentImageContext()!
+        let image = UIGraphicsGetImageFromCurrentImageContext()!
         UIGraphicsEndImageContext()
 
-        UIGraphicsBeginImageContext(size)
-        UIColor.red.setFill()
-        UIRectFill(CGRect(origin: .zero, size: size))
-        let image2 = UIGraphicsGetImageFromCurrentImageContext()!
-        UIGraphicsEndImageContext()
-
-        let data1 = image1.jpegData(compressionQuality: 0.9)!
-        let data2 = image2.jpegData(compressionQuality: 0.9)!
-
-        let hash1 = try PhotoFingerprint.compute(from: data1)
-        let hash2 = try PhotoFingerprint.compute(from: data2)
+        let data = image.jpegData(compressionQuality: 0.9)!
+        let hash1 = try PhotoFingerprint.compute(from: data)
+        let hash2 = try PhotoFingerprint.compute(from: data)
 
         XCTAssertEqual(hash1.contentHash, hash2.contentHash)
+        XCTAssertEqual(hash1.contentHash, hash1.fileHash, "去重主键应为字节哈希")
     }
 
-    func testDifferentImagesProduceDifferentHash() throws {
+    func testDifferentBytesProduceDifferentHash() throws {
         let size = CGSize(width: 50, height: 50)
 
         UIGraphicsBeginImageContext(size)
@@ -46,7 +39,7 @@ final class PhotoFingerprintTests: XCTestCase {
         XCTAssertNotEqual(blueHash.contentHash, greenHash.contentHash)
     }
 
-    func testVerifyContent() throws {
+    func testVerifyContentMatchesFileBytes() throws {
         let size = CGSize(width: 30, height: 30)
         UIGraphicsBeginImageContext(size)
         UIColor.orange.setFill()

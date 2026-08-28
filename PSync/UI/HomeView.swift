@@ -5,6 +5,7 @@ struct HomeView: View {
     @ObservedObject var session: SessionManager
     @State private var selectedItems: [PhotosPickerItem] = []
     @State private var navigateToSharing = false
+    @FocusState private var isJoinCodeFocused: Bool
 
     var body: some View {
         NavigationStack {
@@ -27,62 +28,64 @@ struct HomeView: View {
                 PhotosPicker(
                     selection: $selectedItems,
                     maxSelectionCount: 100,
-                    matching: .images
+                    matching: .any(of: [.images, .livePhotos]),
+                    photoLibrary: .shared()
                 ) {
-                    Label("选择照片", systemImage: "photo.badge.plus")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(Color.blue.opacity(0.1))
-                        .foregroundStyle(.blue)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                    PSyncPhotoPickerButtonLabel(
+                        title: session.selectedPhotos.isEmpty
+                            ? "选择照片"
+                            : "已选择 \(session.selectedPhotos.count) 张照片",
+                        systemImage: session.selectedPhotos.isEmpty ? "photo.badge.plus" : "checkmark.circle.fill",
+                        hasSelection: !session.selectedPhotos.isEmpty
+                    )
                 }
+                .buttonStyle(.plain)
                 .onChange(of: selectedItems) { _, newItems in
                     Task {
                         await session.processSelectedImages(newItems)
                     }
                 }
 
-                if !session.selectedPhotos.isEmpty {
-                    Text("已选择 \(session.selectedPhotos.count) 张照片")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-
                 HStack {
                     Text("加入码")
                         .font(.headline)
                     Spacer()
-                    JoinCodeInputView(code: $session.joinCodeInput)
+                    JoinCodeInputView(code: $session.joinCodeInput, isFocused: $isJoinCodeFocused)
                 }
-                .padding(.horizontal)
-
-                Text("留空则创建新共享，或输入 4 位加入码加入")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
 
                 Button {
                     Task {
                         await session.startSharing()
-                        navigateToSharing = true
+                        if session.isSharing {
+                            navigateToSharing = true
+                        }
                     }
                 } label: {
-                    Text("开始共享")
-                        .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(session.selectedPhotos.isEmpty ? Color.gray : Color.blue)
-                        .foregroundStyle(.white)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                    PSyncPrimaryButtonLabel(
+                        title: "开始共享",
+                        isEnabled: isJoinCodeValid
+                    )
                 }
-                .disabled(session.selectedPhotos.isEmpty)
-                .padding(.horizontal)
+                .buttonStyle(.plain)
+                .disabled(!isJoinCodeValid)
 
                 Spacer()
             }
             .padding()
             .navigationDestination(isPresented: $navigateToSharing) {
                 SharingView(session: session)
+            }
+            .onChange(of: session.shouldPopSharingUI) { _, shouldPop in
+                guard shouldPop else { return }
+                navigateToSharing = false
+                selectedItems = []
+                session.acknowledgeSharingUIPopped()
+            }
+            .onChange(of: session.selectedPhotos.count) { _, count in
+                // 会话清空选图后，同步清空 PhotosPicker 勾选状态
+                if count == 0, !selectedItems.isEmpty {
+                    selectedItems = []
+                }
             }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -96,43 +99,48 @@ struct HomeView: View {
             .sheet(isPresented: $session.showSettings) {
                 SettingsView(session: session)
             }
+            .dismissKeyboardOnTapOutside(excluding: "join_code_input", isFocused: $isJoinCodeFocused)
         }
+    }
+
+    private var isJoinCodeValid: Bool {
+        JoinCodeGenerator.isValid(session.joinCodeInput)
     }
 }
 
 struct JoinCodeInputView: View {
     @Binding var code: String
+    @FocusState.Binding var isFocused: Bool
 
     var body: some View {
-        HStack(spacing: 8) {
-            ForEach(0..<4, id: \.self) { index in
-                TextField("", text: digitBinding(index: index))
-                    .frame(width: 44, height: 52)
-                    .multilineTextAlignment(.center)
-                    .font(.title2.bold())
-                    .keyboardType(.numberPad)
-                    .background(Color.gray.opacity(0.1))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+        ZStack {
+            TextField("", text: $code)
+                .keyboardType(.numberPad)
+                .focused($isFocused)
+                .opacity(0)
+                .frame(width: 1, height: 1)
+
+            HStack(spacing: 8) {
+                ForEach(0..<4, id: \.self) { index in
+                    Text(digit(at: index))
+                        .frame(width: 44, height: 52)
+                        .font(.title2.bold())
+                        .background(Color.gray.opacity(0.1))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
             }
+            .contentShape(Rectangle())
+            .onTapGesture { isFocused = true }
+        }
+        .accessibilityIdentifier("join_code_input")
+        .onChange(of: code) { _, newValue in
+            let filtered = String(newValue.filter(\.isNumber).prefix(4))
+            if filtered != newValue { code = filtered }
         }
     }
 
-    private func digitBinding(index: Int) -> Binding<String> {
-        Binding(
-            get: {
-                guard index < code.count else { return "" }
-                return String(code[code.index(code.startIndex, offsetBy: index)])
-            },
-            set: { newValue in
-                let filtered = newValue.filter(\.isNumber)
-                var chars = Array(code.padding(toLength: 4, withPad: " ", startingAt: 0))
-                if filtered.isEmpty {
-                    if index < chars.count { chars[index] = " " }
-                } else {
-                    chars[index] = filtered.last!
-                }
-                code = String(chars).replacingOccurrences(of: " ", with: "").prefix(4).description
-            }
-        )
+    private func digit(at index: Int) -> String {
+        guard index < code.count else { return "" }
+        return String(code[code.index(code.startIndex, offsetBy: index)])
     }
 }

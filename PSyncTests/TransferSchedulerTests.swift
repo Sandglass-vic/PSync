@@ -30,6 +30,19 @@ final class TransferSchedulerTests: XCTestCase {
         XCTAssertNoThrow(try graph.addTask(task3))
     }
 
+    func testGeneratePlanDeduplicatesDestinationHash() {
+        let registry = GlobalPhotoRegistry()
+        registry.ingestManifest(from: "A", photos: [makePhoto("H1", "A")])
+        registry.ingestManifest(from: "B", photos: [makePhoto("H2", "B")])
+        registry.ingestManifest(from: "C", photos: [makePhoto("H3", "C")])
+
+        let scheduler = TransferScheduler(registry: registry)
+        let tasks = scheduler.generatePlan(members: ["A", "B", "C"])
+
+        let keys = tasks.map { "\($0.destinationDeviceId):\($0.contentHash)" }
+        XCTAssertEqual(keys.count, Set(keys).count)
+    }
+
     func testRescheduleFailedTask() {
         let registry = GlobalPhotoRegistry()
         registry.ingestManifest(from: "A", photos: [makePhoto("H1", "A")])
