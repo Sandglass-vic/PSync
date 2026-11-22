@@ -2,6 +2,8 @@
 
 2～8 人面对面本地照片互传 iOS 应用。
 
+**产品主页：<https://sandglass-vic.github.io/PSync/>**
+
 ## 宣传视频
 
 [![PSync 宣传视频](docs/promo/poster.jpg)](docs/promo/PSync-promo.mp4)
