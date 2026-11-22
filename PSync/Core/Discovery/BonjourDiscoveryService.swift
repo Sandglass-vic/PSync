@@ -44,7 +44,7 @@ final class BonjourDiscoveryService: @unchecked Sendable {
             }
         }
         browser.browseResultsChangedHandler = { [weak self] results, changes in
-            print("[Bonjour] results=\(results.count) changes=\(changes.count)")
+            print("[Bonjour] results=\(results.count) changeEvents=\(changes.count)")
             self?.handleResults(results)
         }
         browser.start(queue: queue)

@@ -52,14 +52,8 @@ struct SharingView: View {
         )) {
             TransferProgressView(session: session)
         }
-        .onDisappear {
-            if session.isSharing,
-               session.sessionState.phase != .completed,
-               session.sessionState.phase != .awaitingGroupSync,
-               !shouldShowTransferProgress {
-                session.cancelSharing()
-            }
-        }
+        // 不在 onDisappear 里自动 cancel：navigationDestination 推出传输页时
+        // SharingView 也会 disappear，误取消会导致「点了确认却进不去/被踢回」
     }
 
     @ViewBuilder

@@ -78,7 +78,10 @@ struct HomeView: View {
             .onChange(of: session.shouldPopSharingUI) { _, shouldPop in
                 guard shouldPop else { return }
                 navigateToSharing = false
-                selectedItems = []
+                // 仅在会话已清空选图时同步清空 PhotosPicker；发现页返回应保留勾选
+                if session.selectedPhotos.isEmpty {
+                    selectedItems = []
+                }
                 session.acknowledgeSharingUIPopped()
             }
             .onChange(of: session.selectedPhotos.count) { _, count in
@@ -100,6 +103,14 @@ struct HomeView: View {
                 SettingsView(session: session)
             }
             .dismissKeyboardOnTapOutside(excluding: "join_code_input", isFocused: $isJoinCodeFocused)
+            .onAppear {
+                SimulatorScenarioRunner.attach(to: session)
+            }
+            .onChange(of: session.isSharing) { _, sharing in
+                if sharing {
+                    navigateToSharing = true
+                }
+            }
         }
     }
 

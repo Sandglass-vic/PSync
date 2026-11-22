@@ -45,16 +45,20 @@ enum NetworkUtility {
             ))
         }
 
-        if let en0Private = candidates.first(where: { $0.name == "en0" && isPrivateIPv4($0.address) }) {
+        if let en0Private = candidates.first(where: {
+            $0.name == "en0" && isPrivateIPv4($0.address) && !isLinkLocalHost($0.address)
+        }) {
             return en0Private
         }
-        if let en0 = candidates.first(where: { $0.name == "en0" }) {
-            return en0
-        }
-        if let privateIf = candidates.first(where: { isPrivateIPv4($0.address) }) {
+        if let privateIf = candidates.first(where: {
+            isPrivateIPv4($0.address) && !isLinkLocalHost($0.address)
+        }) {
             return privateIf
         }
-        return candidates.first
+        if let en0 = candidates.first(where: { $0.name == "en0" && !isLinkLocalHost($0.address) }) {
+            return en0
+        }
+        return candidates.first(where: { !isLinkLocalHost($0.address) })
     }
 
     /// 获取本机 Wi-Fi IPv4 地址
@@ -71,12 +75,21 @@ enum NetworkUtility {
             || normalized.hasPrefix("127.")
     }
 
+    /// 链路本地地址（无 DHCP / 直连失败常见），不可靠
+    static func isLinkLocalHost(_ host: String) -> Bool {
+        let normalized = host.lowercased()
+        if normalized.hasPrefix("169.254.") { return true }
+        if normalized.hasPrefix("fe80:") { return true }
+        return false
+    }
+
     /// 是否可作为 P2P 传输目标地址
     static func isUsableTransferHost(_ host: String) -> Bool {
         let normalized = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !normalized.isEmpty else { return false }
         if normalized == "bonjour" { return false }
         if isLoopbackHost(normalized) { return false }
+        if isLinkLocalHost(normalized) { return false }
         return true
     }
 

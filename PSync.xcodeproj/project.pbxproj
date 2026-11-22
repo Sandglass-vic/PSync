@@ -41,6 +41,7 @@
 		F0DC21F68BCF4EE598800B58 /* PSync/Core/Session/SessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28FD3839D1EE40D8B3590F2E /* PSync/Core/Session/SessionManager.swift */; };
 		GCB1111111111111111111111 /* PSync/Core/Session/GroupCompletionBarrier.swift in Sources */ = {isa = PBXBuildFile; fileRef = GCB1111111111111111111110 /* PSync/Core/Session/GroupCompletionBarrier.swift */; };
 		F9A1B2C3D4E5F64789ABCD01 /* PSync/Core/Debug/DebugSessionLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9A1B2C3D4E5F64789ABCD00 /* PSync/Core/Debug/DebugSessionLogger.swift */; };
+		SIM1111111111111111111111 /* PSync/Core/Debug/SimulatorScenarioRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = SIM1111111111111111111110 /* PSync/Core/Debug/SimulatorScenarioRunner.swift */; };
 		F51F4344D9CC4EDBAF8AFBC6 /* TransferSchedulerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08A89FFE889F41748A4DE9EF /* TransferSchedulerTests.swift */; };
 		F7A1B2C3D4E5F64789ABCDEF /* ABCTransferScenarioTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7A1B2C3D4E5F64789ABCDE0 /* ABCTransferScenarioTests.swift */; };
 		F8B2C3D4E5F64789ABCDEF0 /* ABTransferScenarioTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8B2C3D4E5F64789ABCDEF1 /* ABTransferScenarioTests.swift */; };
@@ -74,6 +75,7 @@
 		28FD3839D1EE40D8B3590F2E /* PSync/Core/Session/SessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PSync/Core/Session/SessionManager.swift; sourceTree = "<group>"; };
 		GCB1111111111111111111110 /* PSync/Core/Session/GroupCompletionBarrier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PSync/Core/Session/GroupCompletionBarrier.swift; sourceTree = "<group>"; };
 		F9A1B2C3D4E5F64789ABCD00 /* PSync/Core/Debug/DebugSessionLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PSync/Core/Debug/DebugSessionLogger.swift; sourceTree = "<group>"; };
+		SIM1111111111111111111110 /* PSync/Core/Debug/SimulatorScenarioRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PSync/Core/Debug/SimulatorScenarioRunner.swift; sourceTree = "<group>"; };
 		33A1FC4DE924427AA523CC4F /* PSync/Core/Network/ControlChannel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PSync/Core/Network/ControlChannel.swift; sourceTree = "<group>"; };
 		4FBC0B37F9EA462F8EB49A74 /* PSync/UI/SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PSync/UI/SettingsView.swift; sourceTree = "<group>"; };
 		5219F7E55EAF4B1B9A8066C7 /* PSync/Core/Network/TransferChannel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PSync/Core/Network/TransferChannel.swift; sourceTree = "<group>"; };
@@ -183,6 +185,7 @@
 				28FD3839D1EE40D8B3590F2E /* PSync/Core/Session/SessionManager.swift */,
 				GCB1111111111111111111110 /* PSync/Core/Session/GroupCompletionBarrier.swift */,
 				F9A1B2C3D4E5F64789ABCD00 /* PSync/Core/Debug/DebugSessionLogger.swift */,
+				SIM1111111111111111111110 /* PSync/Core/Debug/SimulatorScenarioRunner.swift */,
 				8AF5E868AA7142F8A750EB10 /* PSync/UI/Components/SharedComponents.swift */,
 				2645E13D2EB6493EA74B768E /* PSync/UI/HomeView.swift */,
 				22E732BD14604730A1F3F999 /* PSync/UI/ResultsView.swift */,
@@ -326,6 +329,7 @@
 				F0DC21F68BCF4EE598800B58 /* PSync/Core/Session/SessionManager.swift in Sources */,
 				GCB1111111111111111111111 /* PSync/Core/Session/GroupCompletionBarrier.swift in Sources */,
 				F9A1B2C3D4E5F64789ABCD01 /* PSync/Core/Debug/DebugSessionLogger.swift in Sources */,
+				SIM1111111111111111111111 /* PSync/Core/Debug/SimulatorScenarioRunner.swift in Sources */,
 				8F9A66ED7E224D1AB4790205 /* PSync/UI/Components/SharedComponents.swift in Sources */,
 				2AF5AB5D491E48ADAC75DDCA /* PSync/UI/HomeView.swift in Sources */,
 				B3307C90108D4437B5A4DF26 /* PSync/UI/ResultsView.swift in Sources */,

@@ -80,14 +80,24 @@ final class ControlChannel: @unchecked Sendable {
         startOutgoing(connection, deviceId: deviceId)
     }
 
-    func send(_ envelope: ProtocolEnvelope, to deviceId: String) throws {
-        guard let connection = connections[deviceId] else { return }
+    func send(_ envelope: ProtocolEnvelope, to deviceId: String) throws -> Bool {
+        guard let connection = connections[deviceId] else { return false }
         let data = try ProtocolCodec.encode(envelope)
         connection.send(content: data, completion: .contentProcessed { _ in })
+        return true
     }
 
+    func hasConnection(to deviceId: String) -> Bool {
+        connections[deviceId] != nil
+    }
+
+    private static let provisionalIdPrefix = "provisional-"
+
     func broadcast(_ envelope: ProtocolEnvelope, excluding deviceId: String? = nil) {
-        for (id, connection) in connections where id != deviceId {
+        for (id, connection) in connections {
+            // 跳过尚未 bind 的 provisional 连接，避免把消息回灌到来源设备
+            guard !id.hasPrefix(Self.provisionalIdPrefix) else { continue }
+            guard id != deviceId else { continue }
             if let data = try? ProtocolCodec.encode(envelope) {
                 connection.send(content: data, completion: .contentProcessed { _ in })
             }
@@ -141,6 +151,10 @@ final class ControlChannel: @unchecked Sendable {
     }
 
     private func startOutgoing(_ connection: NWConnection, deviceId: String) {
+        if let existing = connections[deviceId], existing !== connection {
+            connectionByObject.removeValue(forKey: ObjectIdentifier(existing))
+            existing.cancel()
+        }
         connections[deviceId] = connection
         connectionByObject[ObjectIdentifier(connection)] = deviceId
         connection.stateUpdateHandler = { [weak self] state in
@@ -153,7 +167,7 @@ final class ControlChannel: @unchecked Sendable {
 
     private func acceptConnection(_ connection: NWConnection) {
         connection.start(queue: queue)
-        let provisionalId = UUID().uuidString
+        let provisionalId = Self.provisionalIdPrefix + UUID().uuidString
         connections[provisionalId] = connection
         connectionByObject[ObjectIdentifier(connection)] = provisionalId
         receive(on: connection, deviceId: provisionalId)
@@ -161,16 +175,21 @@ final class ControlChannel: @unchecked Sendable {
 
     private func bindConnection(_ connection: NWConnection, to deviceId: String) {
         let objectId = ObjectIdentifier(connection)
-        if let provisionalId = connectionByObject[objectId], provisionalId != deviceId {
-            connections.removeValue(forKey: provisionalId)
-            receiveBuffers.removeValue(forKey: provisionalId)
+        let previousId = connectionByObject[objectId]
+        if let previousId, previousId != deviceId {
+            connections.removeValue(forKey: previousId)
+            if receiveBuffers[deviceId] == nil, let buf = receiveBuffers[previousId] {
+                receiveBuffers[deviceId] = buf
+            }
+            receiveBuffers.removeValue(forKey: previousId)
+        }
+        // 同一 deviceId 已有另一条连接时关掉旧的，防止重复投递
+        if let existing = connections[deviceId], existing !== connection {
+            connectionByObject.removeValue(forKey: ObjectIdentifier(existing))
+            existing.cancel()
         }
         connections[deviceId] = connection
         connectionByObject[objectId] = deviceId
-        if receiveBuffers[deviceId] == nil, let provisionalId = connectionByObject[objectId] {
-            receiveBuffers[deviceId] = receiveBuffers[provisionalId]
-            receiveBuffers.removeValue(forKey: provisionalId)
-        }
     }
 
     private func receive(on connection: NWConnection, deviceId: String) {

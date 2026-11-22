@@ -40,6 +40,9 @@ final class SessionManager: ObservableObject {
     private var hasExecutedTransferPlan = false
     private var groupBarrier = GroupCompletionBarrier()
     private var groupSettleTask: Task<Void, Never>?
+    /// 上次成功投递清单的协调者；仅在协调者变更时强制重发，避免三人确认时清单风暴
+    private var lastManifestTargetCoordinatorId: String?
+    private var lastManifestSendAt: Date?
 
     /// 已完成本机收发、等待全员同步的成员数（用于 UI）
     var completedMemberCount: Int { groupBarrier.completedMemberCount }
@@ -82,6 +85,14 @@ final class SessionManager: ObservableObject {
                 assetLocalIdentifier: identifier,
                 to: &photos
             )
+        }
+        selectedPhotos = photos
+    }
+
+    func replaceSelectedPhotos(withStillImages dataList: [Data]) {
+        var photos: [LocalPhoto] = []
+        for data in dataList {
+            appendStillData(data, isLivePhoto: false, assetLocalIdentifier: nil, to: &photos)
         }
         selectedPhotos = photos
     }
@@ -217,6 +228,8 @@ final class SessionManager: ObservableObject {
         sessionState.joinCode = joinCode
         sessionState.localPhotos = selectedPhotos
         sessionState.receivedPhotos.removeAll()
+        sessionState.members.removeAll()
+        sessionState.securityCode = nil
         sessionState.photosReceived = 0
         sessionState.photosToReceive = 0
         sessionState.phase = .discovering
@@ -313,14 +326,12 @@ final class SessionManager: ObservableObject {
         updateMemberConfirmation(deviceId: identity.deviceId, confirmed: true)
         broadcastSecurityConfirm(confirmed: true)
         announceEndpointsToCoordinator()
+        reconcileCoordinatorElection()
         if isCoordinator {
             broadcastMembershipUpdate()
-        }
-        sendPhotoManifest()
-
-        if isCoordinator {
             manifestReceived.insert(identity.deviceId)
         }
+        sendPhotoManifest()
         advancePhaseIfAllConfirmed()
     }
 
@@ -344,17 +355,26 @@ final class SessionManager: ObservableObject {
         guard !isLeaving else { return }
         isLeaving = true
 
+        // 仅共享成功后的退出才清空主页选图与加入码；发现/确认阶段返回应保留
+        let clearHomeSelection: Bool = {
+            switch sessionState.phase {
+            case .completed, .awaitingGroupSync:
+                return true
+            default:
+                return false
+            }
+        }()
+
         let shouldNotifyGroup = isTransferNetworkActive
             && sessionState.members.contains { $0.deviceId != identity.deviceId }
         if shouldNotifyGroup {
             notifyGroupLeave()
             Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(250))
-                // 用户主动退出回主页：清空加入码与选图
-                self.cleanupSession(clearPhotos: true)
+                self.cleanupSession(clearPhotos: clearHomeSelection)
             }
         } else {
-            cleanupSession(clearPhotos: true)
+            cleanupSession(clearPhotos: clearHomeSelection)
         }
     }
 
@@ -369,6 +389,7 @@ final class SessionManager: ObservableObject {
         guard ad.joinCode == sessionState.joinCode else { return }
 
         peerEndpoints[ad.deviceId] = endpoint
+        ensureLocalMemberPresent()
 
         if !nearbyDevices.contains(where: { $0.deviceId == ad.deviceId }) {
             nearbyDevices.append(ad)
@@ -379,35 +400,11 @@ final class SessionManager: ObservableObject {
             }
         }
 
-        if let currentSessionId = sessionState.sessionId,
-           ad.sessionId == currentSessionId,
-           isSharing,
-           hasJoinedRemoteSession || isCoordinator {
-            promoteToWaitingConfirmationIfNeeded()
-            return
-        }
-
-        let peerShouldCoordinate = ad.deviceId < identity.deviceId
-
-        if peerShouldCoordinate {
-            let alreadyJoined = hasJoinedRemoteSession
-                && sessionState.coordinatorDeviceId == ad.deviceId
-                && sessionState.sessionId == ad.sessionId
-            guard !alreadyJoined else { return }
-            hasJoinedRemoteSession = true
-            isCoordinator = false
-            sessionState.coordinatorDeviceId = ad.deviceId
-            sessionState.sessionId = ad.sessionId
-            Task {
-                _ = await transferChannel.waitUntilReady()
-                await MainActor.run {
-                    self.joinExistingSession(ad)
-                }
-            }
-        } else if !isCoordinator && !hasJoinedRemoteSession {
-            becomeCoordinator()
-        }
-
+        upsertDiscoveredPeer(ad, isPeerCoordinator: ad.deviceId < identity.deviceId)
+        reconcileCoordinatorElection(
+            peerSessionId: ad.sessionId,
+            peerDeviceId: ad.deviceId
+        )
         promoteToWaitingConfirmationIfNeeded()
     }
 
@@ -415,6 +412,70 @@ final class SessionManager: ObservableObject {
         if sessionState.phase == .discovering && sessionState.members.count > 1 {
             sessionState.phase = .waitingConfirmation
             regenerateSecurityCode()
+        }
+    }
+
+    /// 全员中 deviceId 最小者任协调者；切换后必须重发清单，否则三人局会卡在 syncingMetadata
+    private func reconcileCoordinatorElection(peerSessionId: String? = nil, peerDeviceId: String? = nil) {
+        ensureLocalMemberPresent()
+        let memberIds = sessionState.members.map(\.deviceId)
+        guard let elected = memberIds.min() else { return }
+
+        let previousCoordinator = sessionState.coordinatorDeviceId
+        let wasCoordinator = isCoordinator
+
+        if elected == identity.deviceId {
+            if !wasCoordinator || previousCoordinator != identity.deviceId {
+                print("[Session] become elected coordinator members=\(memberIds.count)")
+                becomeCoordinator()
+                if let joinCode = sessionState.joinCode, let sessionId = sessionState.sessionId {
+                    controlChannel.registerBonjourAdvertisement(
+                        deviceId: identity.deviceId,
+                        joinCode: joinCode,
+                        sessionId: sessionId,
+                        displayName: identity.userName,
+                        avatarId: identity.avatarId
+                    )
+                }
+                if localMemberConfirmed {
+                    manifestReceived.insert(identity.deviceId)
+                    sendPhotoManifest(force: true)
+                }
+                broadcastMembershipUpdate()
+                tryStartTransferIfReady()
+            }
+            return
+        }
+
+        // 跟随更小 deviceId 的协调者
+        isCoordinator = false
+        hasJoinedRemoteSession = true
+        sessionState.coordinatorDeviceId = elected
+
+        if let peerDeviceId, peerDeviceId == elected, let peerSessionId {
+            sessionState.sessionId = peerSessionId
+        } else if let nearby = nearbyDevices.first(where: { $0.deviceId == elected }) {
+            sessionState.sessionId = nearby.sessionId
+        }
+
+        let coordinatorChanged = previousCoordinator != elected
+        let needJoin = coordinatorChanged
+            || !controlChannel.hasConnection(to: elected)
+
+        if needJoin, let nearby = nearbyDevices.first(where: { $0.deviceId == elected }) {
+            print("[Session] follow coordinator \(elected.prefix(8)) reconnect=\(needJoin)")
+            Task {
+                _ = await transferChannel.waitUntilReady()
+                await MainActor.run {
+                    self.joinExistingSession(nearby)
+                    if self.localMemberConfirmed {
+                        self.sendPhotoManifest(force: true)
+                    }
+                }
+            }
+        } else if localMemberConfirmed, coordinatorChanged || wasCoordinator {
+            print("[Session] coordinator changed \(previousCoordinator?.prefix(8) ?? "nil") → \(elected.prefix(8)), resend manifest")
+            sendPhotoManifest(force: true)
         }
     }
 
@@ -436,8 +497,13 @@ final class SessionManager: ObservableObject {
     private func joinExistingSession(_ ad: DiscoveryAdvertisementPayload) {
         sessionState.sessionId = ad.sessionId
         sessionState.coordinatorDeviceId = ad.deviceId
+        isCoordinator = false
+        hasJoinedRemoteSession = true
 
-        guard let endpoint = peerEndpoints[ad.deviceId] else { return }
+        guard let endpoint = peerEndpoints[ad.deviceId] else {
+            print("[Session] join missing endpoint for \(ad.deviceId.prefix(8))")
+            return
+        }
         controlChannel.connect(to: endpoint, deviceId: ad.deviceId)
 
         let device = DeviceInfoPayload(
@@ -452,14 +518,48 @@ final class SessionManager: ObservableObject {
             transferPort: transferChannel.port
         )
 
-        if let envelope = try? ProtocolEnvelope(
+        guard let envelope = try? ProtocolEnvelope(
             messageType: .joinRequest,
             deviceId: identity.deviceId,
             sessionId: sessionState.sessionId,
             payload: JoinRequestPayload(device: device)
-        ) {
-            try? controlChannel.send(envelope, to: ad.deviceId)
+        ) else { return }
+
+        // Bonjour 连接建立需要一点时间，失败则重试
+        Task { @MainActor in
+            for attempt in 0..<5 {
+                if attempt > 0 {
+                    try? await Task.sleep(for: .milliseconds(250))
+                    if let endpoint = self.peerEndpoints[ad.deviceId] {
+                        self.controlChannel.connect(to: endpoint, deviceId: ad.deviceId)
+                    }
+                }
+                if self.ensureControlSend(envelope, to: ad.deviceId) {
+                    print("[Session] joinRequest sent to \(ad.deviceId.prefix(8)) attempt=\(attempt)")
+                    return
+                }
+            }
+            print("[Session] joinRequest FAILED to \(ad.deviceId.prefix(8))")
         }
+    }
+
+    @discardableResult
+    private func ensureControlSend(_ envelope: ProtocolEnvelope, to deviceId: String) -> Bool {
+        if let sent = try? controlChannel.send(envelope, to: deviceId), sent {
+            return true
+        }
+        if let endpoint = peerEndpoints[deviceId] {
+            controlChannel.connect(to: endpoint, deviceId: deviceId)
+        } else if let member = sessionState.members.first(where: { $0.deviceId == deviceId }),
+                  NetworkUtility.isUsableTransferHost(member.networkEndpoint),
+                  member.controlPort > 0 {
+            controlChannel.connect(
+                to: member.networkEndpoint,
+                port: member.controlPort,
+                deviceId: deviceId
+            )
+        }
+        return (try? controlChannel.send(envelope, to: deviceId)) ?? false
     }
 
     private func addSelfAsMember(isCoordinator: Bool) {
@@ -476,13 +576,50 @@ final class SessionManager: ObservableObject {
         )
         mutateSessionState { state in
             if !state.members.contains(where: { $0.deviceId == identity.deviceId }) {
-                state.members.append(member)
+                state.members.insert(member, at: 0)
             } else if let index = state.members.firstIndex(where: { $0.deviceId == identity.deviceId }) {
                 state.members[index].transferPort = transferChannel.port
                 state.members[index].controlPort = controlChannel.controlPort
                 state.members[index].networkEndpoint = localHostAddress()
+                state.members[index].isCoordinator = isCoordinator
+                state.members[index].userName = identity.userName
+                state.members[index].avatarId = identity.avatarId
             }
         }
+        syncCoordinatorMembers()
+    }
+
+    /// 成员列表同步后必须始终包含本机，否则会出现「只看到别人」
+    private func ensureLocalMemberPresent() {
+        guard isSharing else { return }
+        if !sessionState.members.contains(where: { $0.deviceId == identity.deviceId }) {
+            addSelfAsMember(isCoordinator: isCoordinator)
+        }
+    }
+
+    private func upsertDiscoveredPeer(_ ad: DiscoveryAdvertisementPayload, isPeerCoordinator: Bool) {
+        mutateSessionState { state in
+            if let index = state.members.firstIndex(where: { $0.deviceId == ad.deviceId }) {
+                state.members[index].userName = ad.displayName
+                state.members[index].avatarId = ad.avatarId
+                state.members[index].networkEndpoint = ad.networkEndpoint
+                state.members[index].controlPort = ad.controlPort
+            } else {
+                state.members.append(
+                    SharingMember(
+                        deviceId: ad.deviceId,
+                        userName: ad.displayName,
+                        avatarId: ad.avatarId,
+                        networkEndpoint: ad.networkEndpoint,
+                        controlPort: ad.controlPort,
+                        transferPort: 0,
+                        isCoordinator: isPeerCoordinator,
+                        confirmed: false
+                    )
+                )
+            }
+        }
+        ensureLocalMemberPresent()
         syncCoordinatorMembers()
     }
 
@@ -522,7 +659,9 @@ final class SessionManager: ObservableObject {
     private func handleJoinRequest(_ envelope: ProtocolEnvelope) {
         guard isCoordinator else { return }
         guard let payload = try? envelope.decodePayload(JoinRequestPayload.self) else { return }
-        guard sessionState.members.count < ProtocolConstants.maxMembers else { return }
+        ensureLocalMemberPresent()
+        guard sessionState.members.count < ProtocolConstants.maxMembers
+            || sessionState.members.contains(where: { $0.deviceId == payload.device.deviceId }) else { return }
 
         let joinedAt = Date().timeIntervalSince1970
         let member = SharingMember(
@@ -543,11 +682,17 @@ final class SessionManager: ObservableObject {
             mutateSessionState { state in
                 state.members.append(member)
             }
-            controlChannel.connect(
-                to: payload.device.networkEndpoint,
-                port: payload.device.controlPort,
-                deviceId: payload.device.deviceId
-            )
+            if let endpoint = peerEndpoints[payload.device.deviceId] {
+                controlChannel.connect(to: endpoint, deviceId: payload.device.deviceId)
+            } else if NetworkUtility.isUsableTransferHost(payload.device.networkEndpoint) {
+                controlChannel.connect(
+                    to: payload.device.networkEndpoint,
+                    port: payload.device.controlPort,
+                    deviceId: payload.device.deviceId
+                )
+            } else {
+                print("[Session] joinRequest from \(payload.device.deviceId.prefix(8)) has unusable host \(payload.device.networkEndpoint)")
+            }
             if sessionState.phase == .discovering {
                 sessionState.phase = .waitingConfirmation
             }
@@ -558,6 +703,8 @@ final class SessionManager: ObservableObject {
                 guard let index = state.members.firstIndex(where: { $0.deviceId == member.deviceId }) else {
                     return
                 }
+                state.members[index].userName = member.userName
+                state.members[index].avatarId = member.avatarId
                 state.members[index].networkEndpoint = member.networkEndpoint
                 state.members[index].controlPort = member.controlPort
                 state.members[index].transferPort = member.transferPort
@@ -565,10 +712,12 @@ final class SessionManager: ObservableObject {
             syncCoordinatorMembers()
         }
 
+        ensureLocalMemberPresent()
+        let roster = sessionState.members
         let acceptPayload = JoinAcceptPayload(
             accepted: true,
             coordinatorDeviceId: identity.deviceId,
-            members: sessionState.members.map { $0.toPayload() },
+            members: roster.map { $0.toPayload() },
             reason: nil
         )
 
@@ -578,8 +727,10 @@ final class SessionManager: ObservableObject {
             sessionId: sessionState.sessionId,
             payload: acceptPayload
         ) {
-            try? controlChannel.send(response, to: payload.device.deviceId)
+            _ = ensureControlSend(response, to: payload.device.deviceId)
             broadcastMembershipUpdate()
+            reconcileCoordinatorElection()
+            tryStartTransferIfReady()
         }
     }
 
@@ -588,30 +739,46 @@ final class SessionManager: ObservableObject {
         sessionState.sessionId = envelope.sessionId ?? sessionState.sessionId
         sessionState.coordinatorDeviceId = payload.coordinatorDeviceId
         isCoordinator = payload.coordinatorDeviceId == identity.deviceId
+        hasJoinedRemoteSession = !isCoordinator
         applyMemberList(payload.members.map { SharingMember(from: $0) })
+        ensureLocalMemberPresent()
         sessionState.phase = .waitingConfirmation
         syncCoordinatorMembers()
         regenerateSecurityCode()
+        reconcileCoordinatorElection()
+        if localMemberConfirmed {
+            sendPhotoManifest(force: true)
+        }
     }
 
     private func handleMembershipUpdate(_ envelope: ProtocolEnvelope) {
         guard let payload = try? envelope.decodePayload(MembershipUpdatePayload.self) else { return }
         applyMemberList(payload.members.map { SharingMember(from: $0) })
+        ensureLocalMemberPresent()
         let code = payload.securityCode
         mutateSessionState { state in
             state.securityCode = code.isEmpty ? nil : code
         }
         syncCoordinatorMembers()
         syncConfirmationsFromMembers()
+        let previousCoordinator = lastManifestTargetCoordinatorId
+        reconcileCoordinatorElection()
 
-        let allConfirmed = sessionState.members.allSatisfy(\.confirmed)
-        if !allConfirmed,
-           sessionState.phase == .syncingMetadata || sessionState.phase == .transferring {
-            sessionState.phase = .waitingConfirmation
+        // 仅协调者变更时重发清单，避免全员同时确认引发清单风暴/崩溃
+        if localMemberConfirmed,
+           sessionState.coordinatorDeviceId != previousCoordinator,
+           sessionState.phase == .waitingConfirmation
+            || sessionState.phase == .syncingMetadata {
+            sendPhotoManifest(force: true)
         }
 
+        // 已进入同步/传输后，不再因过期 membership 把阶段打回确认页
         if sessionState.phase == .waitingConfirmation {
             advancePhaseIfAllConfirmed()
+        } else if sessionState.phase == .syncingMetadata {
+            if isCoordinator {
+                tryStartTransferIfReady()
+            }
         } else if sessionState.phase == .transferring {
             executeLocalTransfers()
         }
@@ -658,11 +825,25 @@ final class SessionManager: ObservableObject {
 
         if isCoordinator {
             broadcastMembershipUpdate()
+            // 把确认状态再推一遍，降低同时点击时丢包导致「有人永远看不到全员确认」
+            if payload.confirmed {
+                for member in sessionState.members
+                where member.deviceId != identity.deviceId && member.deviceId != envelope.deviceId {
+                    if let relay = try? ProtocolEnvelope(
+                        messageType: .securityConfirm,
+                        deviceId: envelope.deviceId,
+                        sessionId: sessionState.sessionId,
+                        payload: payload
+                    ) {
+                        _ = ensureControlSend(relay, to: member.deviceId)
+                    }
+                }
+            }
         }
 
         if !payload.confirmed {
             manifestReceived.remove(envelope.deviceId)
-            if sessionState.phase == .syncingMetadata {
+            if sessionState.phase == .syncingMetadata, !hasExecutedTransferPlan {
                 sessionState.phase = .waitingConfirmation
             }
             return
@@ -672,7 +853,11 @@ final class SessionManager: ObservableObject {
     }
 
     private func handlePhotoManifest(_ envelope: ProtocolEnvelope) {
+        // 忽略本机清单回环（provisional 连接广播曾导致自收自激风暴/崩溃）
+        guard envelope.deviceId != identity.deviceId else { return }
         guard let payload = try? envelope.decodePayload(PhotoManifestPayload.self) else { return }
+
+        let isNew = !manifestReceived.contains(envelope.deviceId)
         coordinator.handlePhotoManifest(from: envelope.deviceId, photos: payload.photos)
         manifestReceived.insert(envelope.deviceId)
         for photo in payload.photos {
@@ -687,8 +872,10 @@ final class SessionManager: ObservableObject {
         )
         // #endregion
 
-        if isCoordinator {
+        if isCoordinator, isNew {
             controlChannel.broadcast(envelope, excluding: envelope.deviceId)
+            tryStartTransferIfReady()
+        } else if isCoordinator {
             tryStartTransferIfReady()
         }
     }
@@ -769,11 +956,26 @@ final class SessionManager: ObservableObject {
     private func advancePhaseIfAllConfirmed() {
         syncCoordinatorMembers()
         guard sessionState.phase == .waitingConfirmation else { return }
+        guard sessionState.members.count > 1 else { return }
         guard coordinator.allConfirmed(members: sessionState.members) else { return }
 
+        // 全员本机已确认：立刻进传输页，不再依赖 sessionPhase 广播（丢包时两人卡住）
         sessionState.phase = .syncingMetadata
+        print("[Session] all confirmed → syncingMetadata coord=\(isCoordinator) members=\(sessionState.members.count)")
+
         if isCoordinator {
             broadcastSessionPhase(.syncingMetadata)
+            // 再逐个补发 phase，避免有人收不到 broadcast
+            if let envelope = try? ProtocolEnvelope(
+                messageType: .sessionPhase,
+                deviceId: identity.deviceId,
+                sessionId: sessionState.sessionId,
+                payload: SessionPhasePayload(phase: "syncing_metadata")
+            ) {
+                for member in sessionState.members where member.deviceId != identity.deviceId {
+                    _ = ensureControlSend(envelope, to: member.deviceId)
+                }
+            }
             tryStartTransferIfReady()
         }
     }
@@ -782,18 +984,54 @@ final class SessionManager: ObservableObject {
         guard isCoordinator else { return }
         guard !hasExecutedTransferPlan else { return }
         syncCoordinatorMembers()
-        guard coordinator.allConfirmed(members: sessionState.members) else { return }
-        guard manifestReceived.count >= sessionState.members.count else { return }
+        let confirmed = coordinator.allConfirmed(members: sessionState.members)
+        let manifestsReady = manifestReceived.count >= sessionState.members.count
+        if !confirmed || !manifestsReady {
+            let missing = Set(sessionState.members.map(\.deviceId)).subtracting(manifestReceived)
+            let missingLabel = missing.map { String($0.prefix(8)) }.sorted().joined(separator: ",")
+            print(
+                "[Session] transfer not ready confirmed=\(confirmed) manifests=\(manifestReceived.count)/\(sessionState.members.count) missing=[\(missingLabel)]"
+            )
+            // #region agent log
+            DebugSessionLogger.log(
+                hypothesisId: "D",
+                location: "SessionManager.tryStartTransferIfReady",
+                message: "waiting",
+                data: [
+                    "confirmed": confirmed,
+                    "manifestCount": manifestReceived.count,
+                    "memberCount": sessionState.members.count,
+                    "manifests": manifestReceived.map { String($0.prefix(8)) }.sorted().joined(separator: ","),
+                    "members": sessionState.members.map { String($0.deviceId.prefix(8)) }.sorted().joined(separator: ","),
+                    "missing": missingLabel
+                ],
+                runId: "dedup-debug"
+            )
+            // #endregion
+            return
+        }
         executeTransferPlan()
     }
 
-    private func sendPhotoManifest() {
+    private func sendPhotoManifest(force: Bool = false) {
+        let targetCoordinator = sessionState.coordinatorDeviceId
+        let now = Date()
+        if !force,
+           lastManifestTargetCoordinatorId == targetCoordinator,
+           let last = lastManifestSendAt,
+           now.timeIntervalSince(last) < 1.0 {
+            return
+        }
+
         let photos = selectedPhotos.map { $0.toMetadata(ownerDeviceId: identity.deviceId) }
         let payload = PhotoManifestPayload(photos: photos)
 
         coordinator.handlePhotoManifest(from: identity.deviceId, photos: photos)
         for photo in photos {
             recordPhotoMetadata(contentHash: photo.contentHash, fileHash: photo.fileHash, isLivePhoto: photo.isLivePhoto)
+        }
+        if isCoordinator {
+            manifestReceived.insert(identity.deviceId)
         }
 
         // #region agent log
@@ -811,11 +1049,27 @@ final class SessionManager: ObservableObject {
             payload: payload
         ) else { return }
 
-        if let coordinatorId = sessionState.coordinatorDeviceId,
+        lastManifestSendAt = now
+        lastManifestTargetCoordinatorId = targetCoordinator
+
+        if let coordinatorId = targetCoordinator,
            coordinatorId != identity.deviceId {
-            try? controlChannel.send(envelope, to: coordinatorId)
+            Task { @MainActor in
+                for attempt in 0..<5 {
+                    if self.ensureControlSend(envelope, to: coordinatorId) {
+                        print("[Session] manifest sent to coordinator \(coordinatorId.prefix(8)) attempt=\(attempt)")
+                        return
+                    }
+                    try? await Task.sleep(for: .milliseconds(300))
+                    if let endpoint = self.peerEndpoints[coordinatorId] {
+                        self.controlChannel.connect(to: endpoint, deviceId: coordinatorId)
+                    }
+                }
+                print("[Session] manifest FAILED to reach coordinator \(coordinatorId.prefix(8))")
+            }
         } else if isCoordinator {
             controlChannel.broadcast(envelope, excluding: identity.deviceId)
+            tryStartTransferIfReady()
         }
     }
 
@@ -860,6 +1114,23 @@ final class SessionManager: ObservableObject {
             payload: payload
         ) {
             controlChannel.broadcast(envelope)
+            // 逐个补发 + 短重试，避免同时确认时部分连接未就绪
+            Task { @MainActor in
+                for attempt in 0..<5 {
+                    var allSent = true
+                    for member in self.sessionState.members where member.deviceId != self.identity.deviceId {
+                        if !self.ensureControlSend(envelope, to: member.deviceId) {
+                            allSent = false
+                        }
+                    }
+                    if allSent {
+                        print("[Session] transfer plan delivered to all members attempt=\(attempt)")
+                        return
+                    }
+                    try? await Task.sleep(for: .milliseconds(350))
+                }
+                print("[Session] transfer plan delivery incomplete after retries")
+            }
         }
 
         activeTransferTasks = tasks
@@ -1586,12 +1857,19 @@ final class SessionManager: ObservableObject {
                         if updated.joinedAt <= 0 {
                             updated.joinedAt = state.members[index].joinedAt
                         }
+                        // 确认只升不降
+                        if state.members[index].confirmed {
+                            updated.confirmed = true
+                        }
                         state.members[index] = updated
                     }
                 }
                 return
             }
 
+            let existingConfirmed = Dictionary(
+                uniqueKeysWithValues: state.members.map { ($0.deviceId, $0.confirmed) }
+            )
             let existingJoinedAt = Dictionary(
                 uniqueKeysWithValues: state.members.map { ($0.deviceId, $0.joinedAt) }
             )
@@ -1600,9 +1878,24 @@ final class SessionManager: ObservableObject {
                 if updated.joinedAt <= 0, let existing = existingJoinedAt[member.deviceId] {
                     updated.joinedAt = existing
                 }
+                // 确认状态只升不降，避免过期 membership 快照把别人的确认打回未确认
+                if existingConfirmed[member.deviceId] == true {
+                    updated.confirmed = true
+                }
                 return updated
             }
+            // 去掉 Bonjour 占位 id，避免同一人出现两条导致 SwiftUI ForEach 异常
+            let snapshot = state.members
+            state.members.removeAll { member in
+                member.deviceId.hasPrefix("bonjour-")
+                    && snapshot.contains {
+                        !$0.deviceId.hasPrefix("bonjour-")
+                            && ($0.deviceId.hasPrefix(String(member.deviceId.dropFirst("bonjour-".count)))
+                                || member.deviceId.hasSuffix(String($0.deviceId.prefix(8))))
+                    }
+            }
         }
+        ensureLocalMemberPresent()
     }
 
     private func removeMember(deviceId: String) {
@@ -1890,10 +2183,9 @@ final class SessionManager: ObservableObject {
         }
 
         // 找出被 ≥2 台设备拥有的 hash（应跳过互传）
-        let sharedHashes = ownerMap
-            .filter { $0.value.count >= 2 }
-            .map { String($0.key.prefix(12)) }
-            .sorted()
+        let sharedHashes = ownerMap.compactMap { key, owners -> String? in
+            owners.count >= 2 ? String(key.prefix(12)) : nil
+        }.sorted()
 
         DebugSessionLogger.log(
             hypothesisId: "D",
